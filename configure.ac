@@ -669,7 +669,16 @@ PKG_CHECK_MODULES([LIBFTDI], [libftdi1], [
 	PKG_CHECK_MODULES([LIBFTDI], [libftdi], [use_libftdi=yes], [use_libftdi=no])
 ])
 
-PKG_CHECK_MODULES([LIBGPIOD], [libgpiod], [use_libgpiod=yes], [use_libgpiod=no])
+PKG_CHECK_MODULES([LIBGPIOD], [libgpiod >= 2.0], [
+	use_libgpiod=yes
+	AC_DEFINE([HAVE_LIBGPIOD_V2], [1], [Linux libgpiod (v2.x) available])
+], [
+	PKG_CHECK_MODULES([LIBGPIOD], [libgpiod], [
+		use_libgpiod=yes
+	], [
+		use_libgpiod=no
+	])
+])
 
 PKG_CHECK_MODULES([LIBJAYLINK], [libjaylink >= 0.2],
 	[use_libjaylink=yes], [use_libjaylink=no])

@@ -19,6 +19,138 @@
 #include <transport/transport.h>
 #include "bitbang.h"
 
+#ifdef HAVE_LIBGPIOD_V2
+
+struct gpiod_line {
+	struct gpiod_chip *chip;
+	struct gpiod_line_request *line_request;
+	unsigned int gpio_num;
+};
+
+static inline int gpiod_line_get_value(struct gpiod_line *gpio_line)
+{
+	return gpiod_line_request_get_value(gpio_line->line_request, gpio_line->gpio_num);
+}
+
+static inline int gpiod_line_set_value(struct gpiod_line *gpio_line, int value)
+{
+	return gpiod_line_request_set_value(gpio_line->line_request, gpio_line->gpio_num, value);
+}
+
+static struct gpiod_chip *gpiod_chip_open_by_number(unsigned int chip_num)
+{
+	char chip_path[32];
+	int l;
+
+	l = snprintf(chip_path, sizeof(chip_path), "/dev/gpiochip%u", chip_num);
+	if (l < 0 || l >= (int)sizeof(chip_path))
+		return NULL;
+
+	return gpiod_chip_open(chip_path);
+}
+
+static struct gpiod_line *gpiod_line_get(struct gpiod_chip *chip, int gpio_num)
+{
+	struct gpiod_line *rv;
+
+	rv = calloc(sizeof(struct gpiod_line), 1);
+	if (!rv)
+		return NULL;
+
+	rv->chip = chip;
+	rv->gpio_num = gpio_num;
+
+	return rv;
+}
+
+static void gpiod_line_release(struct gpiod_line *gpio_line)
+{
+	/* note: we must not touch the gpio_line->chip here */
+
+	gpiod_line_request_release(gpio_line->line_request);
+	free(gpio_line);
+}
+
+static int gpiod_line_request_input(struct gpiod_line *gpio_line, const char *consumer)
+{
+	struct gpiod_line_settings *line_settings = NULL;
+	struct gpiod_line_config *line_config = NULL;
+	struct gpiod_request_config *req_cfg = NULL;
+	int retval = -1;
+
+	line_settings = gpiod_line_settings_new();
+	line_config = gpiod_line_config_new();
+	req_cfg = gpiod_request_config_new();
+
+	if (!line_settings || !line_config || !req_cfg)
+		goto err_out;
+
+	retval = gpiod_line_settings_set_direction(line_settings, GPIOD_LINE_DIRECTION_INPUT);
+	if (retval != 0)
+		goto err_out;
+
+	retval = gpiod_line_config_add_line_settings(line_config, &gpio_line->gpio_num, 1, line_settings);
+	if (retval != 0)
+		goto err_out;
+
+	gpiod_request_config_set_consumer(req_cfg, consumer);
+
+	gpio_line->line_request = gpiod_chip_request_lines(gpio_line->chip, req_cfg, line_config);
+	if (!gpio_line->line_request)
+		goto err_out;
+
+	retval = 0;
+
+err_out:
+	gpiod_line_settings_free(line_settings);
+	gpiod_line_config_free(line_config);
+	gpiod_request_config_free(req_cfg);
+	return retval;
+}
+
+static int gpiod_line_request_output(struct gpiod_line *gpio_line, const char *consumer, int value)
+{
+	struct gpiod_line_settings *line_settings = NULL;
+	struct gpiod_line_config *line_config = NULL;
+	struct gpiod_request_config *req_cfg = NULL;
+	int retval = -1;
+
+	line_settings = gpiod_line_settings_new();
+	line_config = gpiod_line_config_new();
+	req_cfg = gpiod_request_config_new();
+
+	if (!line_settings || !line_config || !req_cfg)
+		goto err_out;
+
+	retval = gpiod_line_settings_set_direction(line_settings, GPIOD_LINE_DIRECTION_OUTPUT);
+	if (retval != 0)
+		goto err_out;
+
+	retval = gpiod_line_settings_set_output_value(line_settings,
+			value ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
+	if (retval != 0)
+		goto err_out;
+
+	retval = gpiod_line_config_add_line_settings(line_config, &gpio_line->gpio_num, 1, line_settings);
+	if (retval != 0)
+		goto err_out;
+
+	gpiod_request_config_set_consumer(req_cfg, consumer);
+
+	gpio_line->line_request = gpiod_chip_request_lines(gpio_line->chip, req_cfg, line_config);
+	if (!gpio_line->line_request)
+		goto err_out;
+
+	retval = 0;
+
+err_out:
+	gpiod_line_settings_free(line_settings);
+	gpiod_line_config_free(line_config);
+	gpiod_request_config_free(req_cfg);
+	return retval;
+}
+#endif
+
 static struct gpiod_chip *gpiod_chip[ADAPTER_GPIO_IDX_NUM] = {};
 static struct gpiod_line *gpiod_line[ADAPTER_GPIO_IDX_NUM] = {};
 
@@ -121,12 +253,13 @@ static void linuxgpiod_swdio_drive(bool is_output)
 {
 	int retval;
 
+#ifndef HAVE_LIBGPIOD_V2
 	/*
-	 * FIXME: change direction requires release and re-require the line
+	 * change direction requires release and re-require the line in libgpiod < 2.x
 	 * https://stackoverflow.com/questions/58735140/
-	 * this would change in future libgpiod
 	 */
 	gpiod_line_release(gpiod_line[ADAPTER_GPIO_IDX_SWDIO]);
+#endif
 
 	if (is_output) {
 		if (gpiod_line[ADAPTER_GPIO_IDX_SWDIO_DIR]) {
@@ -273,6 +406,7 @@ static int linuxgpiod_quit(void)
 	return ERROR_OK;
 }
 
+#ifndef HAVE_LIBGPIOD_V2
 static int helper_get_line(enum adapter_gpio_config_index idx)
 {
 	if (!is_gpio_config_valid(idx))
@@ -359,6 +493,106 @@ static int helper_get_line(enum adapter_gpio_config_index idx)
 
 	return ERROR_OK;
 }
+#else
+static int helper_get_line(enum adapter_gpio_config_index idx)
+{
+	struct gpiod_line_settings *line_settings = NULL;
+	struct gpiod_line_config *line_config = NULL;
+	struct gpiod_request_config *req_cfg = NULL;
+	int retval = ERROR_JTAG_INIT_FAILED;
+
+	if (!is_gpio_config_valid(idx))
+		return ERROR_OK;
+
+	gpiod_chip[idx] = gpiod_chip_open_by_number(adapter_gpio_config[idx].chip_num);
+	if (!gpiod_chip[idx]) {
+		LOG_ERROR("Cannot open LinuxGPIOD chip %d for %s", adapter_gpio_config[idx].chip_num,
+			adapter_gpio_get_name(idx));
+		return ERROR_JTAG_INIT_FAILED;
+	}
+
+	gpiod_line[idx] = gpiod_line_get(gpiod_chip[idx], adapter_gpio_config[idx].gpio_num);
+	line_settings = gpiod_line_settings_new();
+	line_config = gpiod_line_config_new();
+	req_cfg = gpiod_request_config_new();
+
+	if (!gpiod_line[idx] || !line_settings || !line_config || !req_cfg) {
+		LOG_ERROR("Cannot configure LinuxGPIOD line for %s", adapter_gpio_get_name(idx));
+		goto err_out;
+	}
+
+	gpiod_request_config_set_consumer(req_cfg, "OpenOCD");
+
+	switch (adapter_gpio_config[idx].init_state) {
+	case ADAPTER_GPIO_INIT_STATE_INPUT:
+		gpiod_line_settings_set_direction(line_settings, GPIOD_LINE_DIRECTION_INPUT);
+		break;
+	case ADAPTER_GPIO_INIT_STATE_INACTIVE:
+		gpiod_line_settings_set_direction(line_settings, GPIOD_LINE_DIRECTION_OUTPUT);
+		gpiod_line_settings_set_output_value(line_settings, GPIOD_LINE_VALUE_INACTIVE);
+		break;
+	case ADAPTER_GPIO_INIT_STATE_ACTIVE:
+		gpiod_line_settings_set_direction(line_settings, GPIOD_LINE_DIRECTION_OUTPUT);
+		gpiod_line_settings_set_output_value(line_settings, GPIOD_LINE_VALUE_ACTIVE);
+		break;
+	}
+
+	if (adapter_gpio_config[idx].init_state != ADAPTER_GPIO_INIT_STATE_INPUT) {
+		switch (adapter_gpio_config[idx].drive) {
+		case ADAPTER_GPIO_DRIVE_MODE_PUSH_PULL:
+			gpiod_line_settings_set_drive(line_settings, GPIOD_LINE_DRIVE_PUSH_PULL);
+			break;
+		case ADAPTER_GPIO_DRIVE_MODE_OPEN_DRAIN:
+			gpiod_line_settings_set_drive(line_settings, GPIOD_LINE_DRIVE_OPEN_DRAIN);
+			break;
+		case ADAPTER_GPIO_DRIVE_MODE_OPEN_SOURCE:
+			gpiod_line_settings_set_drive(line_settings, GPIOD_LINE_DRIVE_OPEN_SOURCE);
+			break;
+		}
+	}
+
+	switch (adapter_gpio_config[idx].pull) {
+	case ADAPTER_GPIO_PULL_NONE:
+		gpiod_line_settings_set_bias(line_settings, GPIOD_LINE_BIAS_DISABLED);
+		break;
+	case ADAPTER_GPIO_PULL_UP:
+		gpiod_line_settings_set_bias(line_settings, GPIOD_LINE_BIAS_PULL_UP);
+		break;
+	case ADAPTER_GPIO_PULL_DOWN:
+		gpiod_line_settings_set_bias(line_settings, GPIOD_LINE_BIAS_PULL_DOWN);
+		break;
+	}
+
+	gpiod_line_settings_set_active_low(line_settings, adapter_gpio_config[idx].active_low);
+
+	retval = gpiod_line_config_add_line_settings(line_config,
+			&adapter_gpio_config[idx].gpio_num, 1, line_settings);
+	if (retval < 0) {
+		LOG_ERROR("Error configuring gpio line %s", adapter_gpio_get_name(idx));
+		retval = ERROR_JTAG_INIT_FAILED;
+		goto err_out;
+	}
+
+	gpiod_line[idx]->line_request = gpiod_chip_request_lines(gpiod_chip[idx], req_cfg, line_config);
+	if (!gpiod_line[idx]->line_request) {
+		LOG_ERROR("Error requesting gpio line %s", adapter_gpio_get_name(idx));
+		retval = ERROR_JTAG_INIT_FAILED;
+		goto err_out;
+	}
+
+	retval = ERROR_OK;
+	goto out;
+
+err_out:
+	free(gpiod_line[idx]);
+	gpiod_line[idx] = NULL;
+out:
+	gpiod_line_settings_free(line_settings);
+	gpiod_line_config_free(line_config);
+	gpiod_request_config_free(req_cfg);
+	return retval;
+}
+#endif
 
 static int linuxgpiod_init(void)
 {
