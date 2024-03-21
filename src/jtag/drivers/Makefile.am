@@ -76,6 +76,9 @@ endif
 if LINUXGPIOD
 DRIVERFILES += %D%/linuxgpiod.c
 endif
+if LINUXGPIODV2
+DRIVERFILES += %D%/linuxgpiodv2.c
+endif
 if JTAG_VPI
 DRIVERFILES += %D%/jtag_vpi.c
 endif

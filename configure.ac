@@ -146,7 +146,8 @@ m4_define([LIBFTDI_USB1_ADAPTERS],
 	[[[openjtag], [OpenJTAG Adapter], [OPENJTAG]]])
 
 m4_define([LIBGPIOD_ADAPTERS],
-	[[[linuxgpiod], [Linux GPIO bitbang through libgpiod], [LINUXGPIOD]]])
+	[[[linuxgpiod], [Linux GPIO bitbang through libgpiod], [LINUXGPIOD]],
+	[[linuxgpiodv2], [Linux GPIO bitbang through libgpiod (v2)], [LINUXGPIODV2]]])
 
 m4_define([LIBJAYLINK_ADAPTERS],
 	[[[jlink], [SEGGER J-Link Programmer], [JLINK]]])
@@ -350,6 +351,10 @@ AS_CASE([$host_os],
 
     AS_IF([test "x$enable_linuxgpiod" = "xyes"], [
       AC_MSG_ERROR([linuxgpiod is only available on linux])
+    ])
+
+    AS_IF([test "x$enable_linuxgpiodv2" = "xyes"], [
+      AC_MSG_ERROR([linuxgpiodv2 is only available on linux])
     ])
 
     AS_IF([test "x$build_xlnx_pcie_xvc" = "xyes"], [
